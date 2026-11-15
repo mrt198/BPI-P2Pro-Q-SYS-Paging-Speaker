@@ -1,0 +1,6 @@
+{
+  "name": "BPI-P2Pro AES67 Paging Console",
+  "description": "Configuration console, Q-SYS zone plugin, and Armbian SBC daemon for PoE AES67 paging speakers with adaptive SPL, room clustering, and hardware controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

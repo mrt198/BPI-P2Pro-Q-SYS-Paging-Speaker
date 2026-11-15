@@ -1,0 +1,19 @@
+[Unit]
+Description=Armbian BPI-P2Pro AES67 PoE Paging Speaker Daemon
+After=network-online.target sound.target ptp4l.service
+Wants=network-online.target ptp4l.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/aes67-pager
+Environment=AES67_CONFIG_PATH=/etc/aes67-pager/config.json
+ExecStart=/usr/bin/python3 /opt/aes67-pager/aes67_daemon.py
+Restart=always
+RestartSec=3
+Nice=-10
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=20
+
+[Install]
+WantedBy=multi-user.target

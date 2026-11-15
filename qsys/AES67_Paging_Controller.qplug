@@ -1,0 +1,294 @@
+-- Q-SYS Designer Plugin: AES67 PoE Paging Controller & Zone Publisher
+-- Target Hardware: Armbian SBC / BananaPi BPI-P2Pro PoE Paging Speakers
+-- Protocol: UDP Multicast Announcement (239.255.77.67:7767) + TCP Control Server (7768)
+
+PluginInfo = {
+  Name = "AES67 Paging~SBC Zone Controller",
+  Version = "1.4.0",
+  BuildVersion = "1.4.0.12",
+  Id = "7f3c91a4-2e8b-4c61-9a40-bpi2pro7767",
+  Author = "Venue AV Engineering",
+  Description = "Publishes Q-SYS Zone stream presets, default settings, and real-time Stage/All Call circuit triggers to Armbian/BananaPi BPI-P2Pro AES67 paging speakers.",
+  ShowDebug = true
+}
+
+function GetColor(props)
+  return { 37, 99, 235 }
+end
+
+function GetPrettyName(props)
+  return "AES67 Paging Zone Controller v" .. PluginInfo.Version
+end
+
+function GetProperties()
+  return {
+    { Name = "Zone Count", Type = "integer", Min = 1, Max = 16, Value = 5 },
+    { Name = "Multicast Address", Type = "string", Value = "239.255.77.67" },
+    { Name = "UDP Announcement Port", Type = "integer", Min = 1024, Max = 65535, Value = 7767 },
+    { Name = "TCP Sync Port", Type = "integer", Min = 1024, Max = 65535, Value = 7768 },
+    { Name = "Network Interface", Type = "string", Value = "LAN A" },
+    { Name = "Announcement Interval (s)", Type = "double", Min = 0.2, Max = 10.0, Value = 1.0 }
+  }
+end
+
+local DefaultZonePresets = {
+  {
+    name = "FOH",
+    stage = "239.69.10.1:5004",
+    all = "239.69.10.2:5004",
+    p1 = "239.69.20.1:5004", p1_mode = "Stereo",
+    p2 = "239.69.20.2:5004", p2_mode = "Stereo",
+    p3 = "239.69.20.3:5004", p3_mode = "Mono",
+    vol = -12, priority = "All>Stage>Prog", allow_none = false, spl_ratio = 0.65
+  },
+  {
+    name = "Backstage",
+    stage = "239.69.10.1:5004",
+    all = "239.69.10.2:5004",
+    p1 = "239.69.21.1:5004", p1_mode = "Mono",
+    p2 = "239.69.20.1:5004", p2_mode = "Mono",
+    p3 = "239.69.21.3:5004", p3_mode = "Mono",
+    vol = -8, priority = "Stage>All>Prog", allow_none = false, spl_ratio = 0.40
+  },
+  {
+    name = "Restaurant",
+    stage = "239.69.10.3:5004",
+    all = "239.69.10.2:5004",
+    p1 = "239.69.22.1:5004", p1_mode = "Stereo",
+    p2 = "239.69.22.2:5004", p2_mode = "Stereo",
+    p3 = "239.69.22.3:5004", p3_mode = "Stereo",
+    vol = -18, priority = "All>Stage>Prog", allow_none = true, spl_ratio = 0.85
+  },
+  {
+    name = "Studio Theatre FOH",
+    stage = "239.69.11.1:5004",
+    all = "239.69.10.2:5004",
+    p1 = "239.69.23.1:5004", p1_mode = "Stereo",
+    p2 = "239.69.23.2:5004", p2_mode = "Stereo",
+    p3 = "239.69.20.1:5004", p3_mode = "Mono",
+    vol = -14, priority = "All>Stage>Prog", allow_none = false, spl_ratio = 0.55
+  },
+  {
+    name = "Studio Theatre Backstage",
+    stage = "239.69.11.1:5004",
+    all = "239.69.10.2:5004",
+    p1 = "239.69.24.1:5004", p1_mode = "Mono",
+    p2 = "239.69.23.1:5004", p2_mode = "Mono",
+    p3 = "239.69.21.1:5004", p3_mode = "Mono",
+    vol = -10, priority = "Stage>All>Prog", allow_none = false, spl_ratio = 0.35
+  }
+}
+
+function GetControls(props)
+  local ctrls = {
+    { Name = "GlobalAllCallActive", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" },
+    { Name = "BroadcastStatus", ControlType = "Indicator", IndicatorType = "Status", Count = 1, UserPin = true, PinStyle = "Output" },
+    { Name = "ActiveSpeakers", ControlType = "Indicator", IndicatorType = "Text", Count = 1, UserPin = true, PinStyle = "Output" }
+  }
+  local zc = props["Zone Count"].Value
+  for i = 1, zc do
+    local pfx = "Zone" .. i .. "_"
+    table.insert(ctrls, { Name = pfx .. "Name", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = pfx .. "StageCallActive", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = pfx .. "AllCallActive", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = pfx .. "StageStream", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "AllStream", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "Prog1Stream", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "Prog1Mode", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "Prog2Stream", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "Prog2Mode", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "Prog3Stream", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "Prog3Mode", ControlType = "Text", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "DefaultVolDb", ControlType = "Knob", ControlUnit = "dB", Min = -60, Max = 0, Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "SplRatio", ControlType = "Knob", ControlUnit = "Float", Min = 0.0, Max = 1.5, Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "AllowNoneCalls", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+    table.insert(ctrls, { Name = pfx .. "PriorityOrder", ControlType = "Text", Count = 1 })
+  end
+  return ctrls
+end
+
+function GetControlLayout(props)
+  local layout = {}
+  local graphics = {
+    { Type = "GroupBox", Text = "Q-SYS AES67 Paging Global Control", Fill = { 241, 245, 249 }, StrokeWidth = 1, CornerRadius = 6, Position = { 10, 10 }, Size = { 820, 74 } },
+    { Type = "Label", Text = "Global All-Call", Position = { 24, 38 }, Size = { 110, 20 }, FontSize = 12, HTextAlign = "Left" },
+    { Type = "Label", Text = "Announcer Status", Position = { 260, 38 }, Size = { 110, 20 }, FontSize = 12, HTextAlign = "Left" },
+    { Type = "Label", Text = "Discovered Units", Position = { 560, 38 }, Size = { 110, 20 }, FontSize = 12, HTextAlign = "Left" }
+  }
+
+  layout["GlobalAllCallActive"] = { PrettyName = "Global~All Call", Style = "Button", ButtonStyle = "Toggle", Legend = "ALL CALL", Color = { 220, 38, 38 }, Position = { 135, 34 }, Size = { 105, 32 } }
+  layout["BroadcastStatus"] = { PrettyName = "Global~Status", Style = "Text", Position = { 375, 34 }, Size = { 165, 32 } }
+  layout["ActiveSpeakers"] = { PrettyName = "Global~Speakers", Style = "Text", Position = { 675, 34 }, Size = { 135, 32 } }
+
+  local zc = props["Zone Count"].Value
+  local y = 96
+  for i = 1, zc do
+    local pfx = "Zone" .. i .. "_"
+    table.insert(graphics, {
+      Type = "GroupBox",
+      Text = "Zone " .. i .. " Configuration & Call Circuits",
+      Fill = { 248, 250, 252 },
+      StrokeWidth = 1,
+      CornerRadius = 6,
+      Position = { 10, y },
+      Size = { 820, 138 }
+    })
+    layout[pfx .. "Name"] = { PrettyName = "Zone " .. i .. "~Name", Style = "Text", Position = { 24, y + 26 }, Size = { 180, 26 } }
+    layout[pfx .. "StageCallActive"] = { PrettyName = "Zone " .. i .. "~Stage Call", Style = "Button", ButtonStyle = "Toggle", Legend = "STAGE CALL", Color = { 217, 119, 6 }, Position = { 214, y + 26 }, Size = { 110, 28 } }
+    layout[pfx .. "AllCallActive"] = { PrettyName = "Zone " .. i .. "~All Call", Style = "Button", ButtonStyle = "Toggle", Legend = "ALL CALL", Color = { 220, 38, 38 }, Position = { 334, y + 26 }, Size = { 110, 28 } }
+    layout[pfx .. "AllowNoneCalls"] = { PrettyName = "Zone " .. i .. "~Allow None", Style = "Button", ButtonStyle = "Toggle", Legend = "Allow None", Position = { 454, y + 26 }, Size = { 96, 28 } }
+    layout[pfx .. "DefaultVolDb"] = { PrettyName = "Zone " .. i .. "~Default Vol", Style = "Text", Position = { 560, y + 26 }, Size = { 80, 28 } }
+    layout[pfx .. "SplRatio"] = { PrettyName = "Zone " .. i .. "~SPL Ratio", Style = "Text", Position = { 650, y + 26 }, Size = { 70, 28 } }
+    layout[pfx .. "PriorityOrder"] = { PrettyName = "Zone " .. i .. "~Priority", Style = "Text", Position = { 730, y + 26 }, Size = { 86, 28 } }
+
+    layout[pfx .. "StageStream"] = { PrettyName = "Zone " .. i .. "~Stage Stream", Style = "Text", Position = { 24, y + 64 }, Size = { 190, 24 } }
+    layout[pfx .. "AllStream"] = { PrettyName = "Zone " .. i .. "~All Stream", Style = "Text", Position = { 224, y + 64 }, Size = { 190, 24 } }
+    layout[pfx .. "Prog1Stream"] = { PrettyName = "Zone " .. i .. "~Prog1 Stream", Style = "Text", Position = { 424, y + 64 }, Size = { 190, 24 } }
+    layout[pfx .. "Prog1Mode"] = { PrettyName = "Zone " .. i .. "~Prog1 Mode", Style = "ComboBox", Position = { 624, y + 64 }, Size = { 90, 24 } }
+
+    layout[pfx .. "Prog2Stream"] = { PrettyName = "Zone " .. i .. "~Prog2 Stream", Style = "Text", Position = { 24, y + 96 }, Size = { 190, 24 } }
+    layout[pfx .. "Prog2Mode"] = { PrettyName = "Zone " .. i .. "~Prog2 Mode", Style = "ComboBox", Position = { 224, y + 96 }, Size = { 90, 24 } }
+    layout[pfx .. "Prog3Stream"] = { PrettyName = "Zone " .. i .. "~Prog3 Stream", Style = "Text", Position = { 324, y + 96 }, Size = { 190, 24 } }
+    layout[pfx .. "Prog3Mode"] = { PrettyName = "Zone " .. i .. "~Prog3 Mode", Style = "ComboBox", Position = { 524, y + 96 }, Size = { 90, 24 } }
+
+    y = y + 148
+  end
+  return layout, graphics
+end
+
+if Controls then
+  local json = require("rapidjson")
+  local udp = UdpSocket.New()
+  local tcpServer = TcpSocketServer.New()
+  local tcpClients = {}
+  local speakerSeen = {}
+  local zoneCount = Properties["Zone Count"].Value
+  local mcastAddr = Properties["Multicast Address"].Value
+  local udpPort = Properties["UDP Announcement Port"].Value
+  local tcpPort = Properties["TCP Sync Port"].Value
+
+  local function InitDefaults()
+    for i = 1, zoneCount do
+      local pfx = "Zone" .. i .. "_"
+      local preset = DefaultZonePresets[i] or {
+        name = "Zone " .. i,
+        stage = "239.69.10.1:5004",
+        all = "239.69.10.2:5004",
+        p1 = "239.69.25." .. i .. ":5004", p1_mode = "Stereo",
+        p2 = "239.69.26." .. i .. ":5004", p2_mode = "Mono",
+        p3 = "239.69.27." .. i .. ":5004", p3_mode = "Mono",
+        vol = -14, priority = "All>Stage>Prog", allow_none = false, spl_ratio = 0.5
+      }
+      if Controls[pfx .. "Name"].String == "" then Controls[pfx .. "Name"].String = preset.name end
+      if Controls[pfx .. "StageStream"].String == "" then Controls[pfx .. "StageStream"].String = preset.stage end
+      if Controls[pfx .. "AllStream"].String == "" then Controls[pfx .. "AllStream"].String = preset.all end
+      if Controls[pfx .. "Prog1Stream"].String == "" then Controls[pfx .. "Prog1Stream"].String = preset.p1 end
+      Controls[pfx .. "Prog1Mode"].Choices = { "Mono", "Stereo" }
+      if Controls[pfx .. "Prog1Mode"].String == "" then Controls[pfx .. "Prog1Mode"].String = preset.p1_mode end
+      if Controls[pfx .. "Prog2Stream"].String == "" then Controls[pfx .. "Prog2Stream"].String = preset.p2 end
+      Controls[pfx .. "Prog2Mode"].Choices = { "Mono", "Stereo" }
+      if Controls[pfx .. "Prog2Mode"].String == "" then Controls[pfx .. "Prog2Mode"].String = preset.p2_mode end
+      if Controls[pfx .. "Prog3Stream"].String == "" then Controls[pfx .. "Prog3Stream"].String = preset.p3 end
+      Controls[pfx .. "Prog3Mode"].Choices = { "Mono", "Stereo" }
+      if Controls[pfx .. "Prog3Mode"].String == "" then Controls[pfx .. "Prog3Mode"].String = preset.p3_mode end
+      if Controls[pfx .. "PriorityOrder"].String == "" then Controls[pfx .. "PriorityOrder"].String = preset.priority end
+      if Controls[pfx .. "DefaultVolDb"].Value == 0 then Controls[pfx .. "DefaultVolDb"].Value = preset.vol end
+      if Controls[pfx .. "SplRatio"].Value == 0 then Controls[pfx .. "SplRatio"].Value = preset.spl_ratio end
+      Controls[pfx .. "AllowNoneCalls"].Boolean = preset.allow_none
+    end
+  end
+
+  local function BuildPayload(packetType)
+    local zones = {}
+    local globalAll = Controls.GlobalAllCallActive.Boolean
+    for i = 1, zoneCount do
+      local pfx = "Zone" .. i .. "_"
+      table.insert(zones, {
+        id = "qsys-zone-" .. i,
+        name = Controls[pfx .. "Name"].String,
+        calls = {
+          stage_active = Controls[pfx .. "StageCallActive"].Boolean,
+          all_active = globalAll or Controls[pfx .. "AllCallActive"].Boolean
+        },
+        streams = {
+          stage_calls = { uri = Controls[pfx .. "StageStream"].String, format = "Mono" },
+          all_calls = { uri = Controls[pfx .. "AllStream"].String, format = "Mono" },
+          program_1 = { uri = Controls[pfx .. "Prog1Stream"].String, format = Controls[pfx .. "Prog1Mode"].String },
+          program_2 = { uri = Controls[pfx .. "Prog2Stream"].String, format = "Mono" == Controls[pfx .. "Prog2Mode"].String and "Mono" or "Stereo" },
+          program_3 = { uri = Controls[pfx .. "Prog3Stream"].String, format = Controls[pfx .. "Prog3Mode"].String }
+        },
+        defaults = {
+          base_volume_db = Controls[pfx .. "DefaultVolDb"].Value,
+          priority_order = Controls[pfx .. "PriorityOrder"].String,
+          allow_none_calls = Controls[pfx .. "AllowNoneCalls"].Boolean,
+          spl_ratio = Controls[pfx .. "SplRatio"].Value
+        }
+      })
+    end
+    return json.encode({
+      protocol = "qsys-aes67-paging-v1",
+      type = packetType,
+      timestamp = os.time(),
+      zones = zones
+    })
+  end
+
+  local function Broadcast(packetType)
+    local payload = BuildPayload(packetType)
+    pcall(function() udp:Send(mcastAddr, udpPort, payload) end)
+    for idx, sock in pairs(tcpClients) do
+      if sock.IsConnected then
+        pcall(function() sock:Write(payload .. "\n") end)
+      else
+        tcpClients[idx] = nil
+      end
+    end
+  end
+
+  InitDefaults()
+  udp:Open(nil, 0)
+  udp:JoinMulticast(mcastAddr)
+  udp.Data = function(_, packet)
+    local ok, msg = pcall(json.decode, packet.Data)
+    if ok and msg and msg.type == "speaker_hello" and msg.unit_id then
+      speakerSeen[msg.unit_id] = os.time()
+      local count = 0
+      local now = os.time()
+      for k, ts in pairs(speakerSeen) do
+        if now - ts < 30 then count = count + 1 else speakerSeen[k] = nil end
+      end
+      Controls.ActiveSpeakers.String = tostring(count) .. " online"
+    end
+  end
+
+  tcpServer.EventHandler = function(sock)
+    table.insert(tcpClients, sock)
+    sock:Write(BuildPayload("zone_directory") .. "\n")
+  end
+  tcpServer:Listen(tcpPort)
+
+  Controls.GlobalAllCallActive.EventHandler = function() Broadcast("call_state") end
+  for i = 1, zoneCount do
+    local pfx = "Zone" .. i .. "_"
+    Controls[pfx .. "StageCallActive"].EventHandler = function() Broadcast("call_state") end
+    Controls[pfx .. "AllCallActive"].EventHandler = function() Broadcast("call_state") end
+    Controls[pfx .. "Name"].EventHandler = function() Broadcast("zone_directory") end
+    Controls[pfx .. "DefaultVolDb"].EventHandler = function() Broadcast("zone_directory") end
+    Controls[pfx .. "AllowNoneCalls"].EventHandler = function() Broadcast("zone_directory") end
+  end
+
+  local heartbeatTimer = Timer.New()
+  local tick = 0
+  heartbeatTimer.EventHandler = function()
+    tick = tick + 1
+    if tick % 5 == 0 then
+      Broadcast("zone_directory")
+    else
+      Broadcast("call_state")
+    end
+    Controls.BroadcastStatus.Value = 0
+    Controls.BroadcastStatus.String = "Active (" .. mcastAddr .. ":" .. udpPort .. ")"
+  end
+  heartbeatTimer:Start(Properties["Announcement Interval (s)"].Value)
+  Broadcast("zone_directory")
+end
